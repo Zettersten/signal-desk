@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod updates;
+
 use chrono::{Local, Timelike};
 use serde::Deserialize;
 use std::{
@@ -235,7 +237,15 @@ async fn run_research(
     });
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
+        // The SDK may write diagnostics to stdout. Keep the brief in a separate,
+        // user-private result file and remove the file when this request ends.
+        let output_dir = tempfile::Builder::new()
+            .prefix("signal-desk-result-")
+            .tempdir()
+            .map_err(|_| "Could not create private storage for the analysis")?;
+        let result_path = output_dir.path().join("brief.json");
         let mut cmd = Command::new(sidecar);
+        cmd.arg("--result-file").arg(&result_path);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -243,21 +253,12 @@ async fn run_research(
         }
         let mut child = cmd
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
+            .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| {
                 "OpenCode is not bundled in this build. See the desktop setup instructions."
             })?;
-        let mut output = child
-            .stdout
-            .take()
-            .ok_or("OpenCode output is unavailable")?;
-        let reader = std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = output.by_ref().take(200_001).read_to_end(&mut bytes);
-            bytes
-        });
         if child
             .stdin
             .take()
@@ -281,12 +282,18 @@ async fn run_research(
             }
             std::thread::sleep(Duration::from_millis(150));
         };
-        let bytes = reader.join().map_err(|_| "Could not read the analysis")?;
-        if !status.success() || bytes.len() > 200_000 {
+        if !status.success() {
             return Err(
                 "OpenCode could not complete the analysis. Check the endpoint, model and token."
                     .into(),
             );
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(result_path)
+            .and_then(|file| file.take(200_001).read_to_end(&mut bytes))
+            .map_err(|_| "OpenCode did not return a readable brief")?;
+        if bytes.len() > 200_000 {
+            return Err("OpenCode returned an oversized brief.".into());
         }
         serde_json::from_slice(&bytes).map_err(|_| "OpenCode returned an invalid brief.".into())
     })
@@ -305,6 +312,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
@@ -321,9 +329,10 @@ fn main() {
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let inbox = MenuItemBuilder::with_id("inbox", "Show inbox").build(app)?;
             let workspace = MenuItemBuilder::with_id("workspace", "Open workspace").build(app)?;
+            let updates = MenuItemBuilder::with_id("updates", "Check for updates…").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit Signal Desk").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&inbox, &workspace, &quit])
+                .items(&[&inbox, &workspace, &updates, &quit])
                 .build()?;
             TrayIconBuilder::with_id("signal-desk")
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
@@ -339,6 +348,7 @@ fn main() {
                         let _ = open_workspace(app.clone(), None);
                     }
                     "quit" => app.exit(0),
+                    "updates" => updates::tray_action(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -362,6 +372,7 @@ fn main() {
                 })
                 .build(app)?;
             digest_clock(app.handle().clone());
+            updates::start(app.handle(), updates);
             if !std::env::args().any(|arg| arg == "--background") {
                 show_inbox(app.handle(), None);
             }

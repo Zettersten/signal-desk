@@ -30,11 +30,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: macos-26, target: aarch64-apple-darwin, extension: dmg }
-          - { runner: macos-26-intel, target: x86_64-apple-darwin, extension: dmg }
-          - { runner: windows-2025, target: x86_64-pc-windows-msvc, extension: exe }
-          - { runner: ubuntu-26.04, target: x86_64-unknown-linux-gnu, extension: AppImage }
-          - { runner: ubuntu-26.04-arm, target: aarch64-unknown-linux-gnu, extension: AppImage }
+          - { runner: macos-26, target: aarch64-apple-darwin }
+          - { runner: macos-26-intel, target: x86_64-apple-darwin }
+          - { runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { runner: ubuntu-26.04, target: x86_64-unknown-linux-gnu }
+          - { runner: ubuntu-26.04-arm, target: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     steps:
@@ -60,13 +60,17 @@ jobs:
       - run: npm ci
       - run: bun install --frozen-lockfile
         working-directory: research
-      - name: Compile and smoke-test embedded OpenCode
+      - name: Compile embedded OpenCode
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bun research/build.ts "$TARGET"
+      - name: Verify embedded OpenCode with the inference fixture
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           RUNNER_PLATFORM: ${{ runner.os }}
         run: |
-          bun research/build.ts "$TARGET"
           sidecar="src-tauri/binaries/signal-research-$TARGET"
           if [ "$RUNNER_PLATFORM" = "Windows" ]; then sidecar="$sidecar.exe"; fi
           "./$sidecar" --self-test
@@ -75,18 +79,37 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          SIGNED_RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri -- build --target "$TARGET" --config src-tauri/with-research.json -- --locked
+          APPLE_CERTIFICATE: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then unset "$name"; fi
+          done
+          args=(--target "$TARGET" --config src-tauri/with-research.json)
+          stage=()
+          if [ "$SIGNED_RELEASE" = true ]; then
+            node scripts/release.mjs config src-tauri/.updater-release.json
+            args+=(--config src-tauri/.updater-release.json)
+            stage+=(--signed)
+            if [ "$RUNNER_OS" = macOS ]; then args+=(--bundles "app,dmg"); fi
+          else
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          fi
+          npm run tauri -- build "${args[@]}" -- --locked
+          node scripts/release.mjs stage "$TARGET" "src-tauri/target/$TARGET/release/bundle" staged "${stage[@]}"
       - uses: actions/upload-artifact@v7
         with:
           name: signal-desk-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.extension }}
+          path: staged/*
           if-no-files-found: error
 
   publish:
@@ -97,6 +120,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - uses: actions/download-artifact@v8
         with:
           pattern: signal-desk-*
@@ -105,8 +131,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
-          test "$TAG" = "v$(node -p 'require("./package.json").version')"
-          mapfile -d '' files < <(find release -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' \) -print0)
-          test "${#files[@]}" -eq 5
-          gh release create "$TAG" --verify-tag --draft --generate-notes "${files[@]}"
+          node scripts/release.mjs manifest release release/latest.json
+          gh release create "$TAG" --verify-tag --draft --generate-notes release/latest.json release/signal-desk-*/*

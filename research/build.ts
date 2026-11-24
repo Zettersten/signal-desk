@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises'
+import { platform, arch } from 'node:process'
 
 const rustTarget = process.argv[2] || (await Bun.$`rustc -vV`.text()).match(/^host: (.+)$/m)?.[1]
 if (!rustTarget) throw new Error('Rust target not available')
@@ -19,7 +20,11 @@ await mkdir(output('binaries', ''), { recursive: true })
 const result = await Bun.build({
   entrypoints: [fileURLToPath(new URL('./index.ts', import.meta.url))],
   compile: {
-    target: bunTarget as Bun.Build.CompileTarget,
+    // Native Windows hosts can reuse their installed Bun runtime. Downloading the
+    // separate baseline compiler fails to extract on the Windows CI runner.
+    ...(platform === 'win32' && arch === 'x64' && rustTarget === 'x86_64-pc-windows-msvc'
+      ? {}
+      : { target: bunTarget as Bun.Build.CompileTarget }),
     outfile: output('binaries', `signal-research-${rustTarget}${exe}`),
   },
   plugins: [

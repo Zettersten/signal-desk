@@ -1,10 +1,14 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 
 const executable = process.argv[2]
 if (!executable) throw new Error('Pass the compiled research worker path.')
 const token = 'signal-desk-local-fixture'
 let calls = 0
+const outputDir = await mkdtemp(join(tmpdir(), 'signal-desk-smoke-'))
+const resultFile = join(outputDir, 'brief.json')
 const server = Bun.serve({
   hostname: '127.0.0.1',
   port: 0,
@@ -45,8 +49,12 @@ const server = Bun.serve({
 })
 
 try {
-  const child = Bun.spawn([resolve(executable)], { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' })
-  const timeout = setTimeout(() => child.kill(), 35_000)
+  const child = Bun.spawn([resolve(executable), '--smoke-test', '--result-file', resultFile], {
+    stdin: 'pipe',
+    stdout: 'ignore',
+    stderr: 'inherit',
+  })
+  const timeout = setTimeout(() => child.kill(), 120_000)
   child.stdin.write(
     JSON.stringify({
       endpoint: `http://127.0.0.1:${server.port}/v1`,
@@ -62,15 +70,15 @@ try {
     }),
   )
   child.stdin.end()
-  const output = await child.stdout.text()
   const code = await child.exited
   clearTimeout(timeout)
   assert.equal(code, 0, `Expected research worker to succeed after ${calls} inference requests`)
-  const brief = JSON.parse(output) as { title: string; text: string }
+  const brief = JSON.parse(await readFile(resultFile, 'utf8')) as { title: string; text: string }
   assert.equal(brief.title, 'Competitive landscape brief')
   assert(brief.text.includes('Evidence review'))
   assert.equal(calls, 2, 'Strategic brief should audit evidence before drafting')
   console.log('Embedded OpenCode verified against the loopback inference fixture.')
 } finally {
   await server.stop(true)
+  await rm(outputDir, { force: true, recursive: true })
 }

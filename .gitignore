@@ -3,6 +3,8 @@ dist/
 target/
 src-tauri/gen/
 src-tauri/binaries/
+src-tauri/.updater-release.json
+staged/
 .DS_Store
 .env*
 coverage/

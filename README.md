@@ -42,7 +42,7 @@ Browser evaluation and plain `tauri dev` do not need an inference token. In the 
 
 ## Releases and platform notes
 
-Push `main` or dispatch **Desktop evaluation and release** for CI artifacts. Push a version tag matching `package.json` (e.g. `v0.1.0`) to create a **draft** GitHub Release after all platform jobs succeed. Review the draft and run the checklist on each target before publishing. No remote or release is created by local setup.
+Push `main` or dispatch **Desktop evaluation and release** for evaluation artifacts without an update channel. A stable version tag matching `package.json` (e.g. `v0.1.0`) builds updater-enabled installers and creates a **draft** GitHub Release only after all platform jobs succeed. See [Release readiness](docs/release-readiness.md) for signing setup and the publish checklist.
 
 | Target | User-scoped installation | Tray behavior |
 | --- | --- | --- |
@@ -51,6 +51,12 @@ Push `main` or dispatch **Desktop evaluation and release** for CI artifacts. Pus
 | Ubuntu 26.04, x64 and arm64 | Mark the AppImage executable and run it as your user. If FUSE is unavailable, run with `--appimage-extract-and-run`. | Requires a usable StatusNotifier/AppIndicator host for reopening from the tray. Linux uses a solid surface and a menu entry to show the inbox. |
 
 Operating-system policies can block unsigned evaluation bundles. Configure the workflow’s Apple Developer ID and notarization secrets for distribution; Windows artifacts are unsigned until a trusted signing pipeline is configured. No machine-wide installer, elevation or background service is bundled.
+
+### Automatic updates
+
+Install the first updater-enabled release manually. Once installed, Signal Desk checks the latest published stable GitHub release shortly after startup and every six hours while the tray app is running, until an update is ready. It automatically downloads and verifies the update. It does not install or restart until you choose **Install update and restart…** from the tray menu and confirm. **Later** keeps the verified package available for this session. The download is held in memory; quitting before installation means it will be downloaded again next time. **Check for updates…** in the same menu triggers a manual check.
+
+The GitHub release must be public or its update feed must be accessible without shipping credentials in the app. Drafts do not reach clients. On macOS and Linux, the updater accepts user-owned installations in writable folders under your home directory. On Linux run the original AppImage, not a separately extracted binary. Browser previews, local dev builds and ordinary branch artifacts do not auto-update.
 
 ## Project layout
 
