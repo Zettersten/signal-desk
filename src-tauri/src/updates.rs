@@ -25,12 +25,12 @@ struct Updates {
     item: MenuItem<tauri::Wry>,
 }
 
-pub fn start(app: &AppHandle, item: MenuItem<tauri::Wry>) {
+pub fn start(app: &AppHandle, item: MenuItem<tauri::Wry>, background: bool) {
     app.manage(Updates {
         status: Mutex::new(Status::Idle),
         item,
     });
-    if unavailable(app).is_none() {
+    if background && unavailable(app).is_none() {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_secs(15)).await;
@@ -44,16 +44,19 @@ pub fn start(app: &AppHandle, item: MenuItem<tauri::Wry>) {
     }
 }
 
-fn unavailable(app: &AppHandle) -> Option<&'static str> {
-    let configured = app.config().plugins.0.get("updater").is_some_and(|config| {
+pub fn configured(config: &tauri::utils::config::Config) -> bool {
+    config.plugins.0.get("updater").is_some_and(|config| {
         config["pubkey"]
             .as_str()
             .is_some_and(|key| !key.trim().is_empty())
             && config["endpoints"]
                 .as_array()
                 .is_some_and(|urls| !urls.is_empty())
-    });
-    if !configured {
+    })
+}
+
+fn unavailable(app: &AppHandle) -> Option<&'static str> {
+    if !configured(app.config()) {
         return Some("This build does not have automatic updates configured. Install a signed release build to enable updates.");
     }
     check_install_location(app).err()

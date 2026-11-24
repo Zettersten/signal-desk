@@ -352,7 +352,9 @@ fn research_worker_path(
 }
 
 fn main() {
-    let app = tauri::Builder::default()
+    let context = tauri::generate_context!();
+    let startup_smoke = std::env::args().any(|arg| arg == "--startup-smoke");
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             if !args.iter().any(|arg| arg == "--background") {
                 show_inbox(app, None);
@@ -362,11 +364,18 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
-        ))
+        ));
+    // The updater requires a configuration object during plugin initialization.
+    // Evaluation and development builds do not have an update channel.
+    let builder = if updates::configured(context.config()) {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             open_workspace,
             hide_inbox,
@@ -374,7 +383,7 @@ fn main() {
             save_artifact,
             run_research
         ])
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let inbox = MenuItemBuilder::with_id("inbox", "Show inbox").build(app)?;
@@ -421,10 +430,12 @@ fn main() {
                     }
                 })
                 .build(app)?;
-            digest_clock(app.handle().clone());
-            updates::start(app.handle(), updates);
-            if !std::env::args().any(|arg| arg == "--background") {
-                show_inbox(app.handle(), None);
+            updates::start(app.handle(), updates, !startup_smoke);
+            if !startup_smoke {
+                digest_clock(app.handle().clone());
+                if !std::env::args().any(|arg| arg == "--background") {
+                    show_inbox(app.handle(), None);
+                }
             }
             Ok(())
         })
@@ -438,9 +449,13 @@ fn main() {
             }
             _ => {}
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to start Signal Desk");
-    app.run(|app, event| {
+    app.run(move |app, event| {
+        if startup_smoke && matches!(event, tauri::RunEvent::Ready) {
+            println!("Signal Desk desktop initialized successfully.");
+            app.exit(0);
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen {
             has_visible_windows: false,
