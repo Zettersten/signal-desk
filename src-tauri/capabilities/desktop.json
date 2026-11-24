@@ -1,0 +1,6 @@
+{
+  "identifier": "desktop",
+  "description": "Local Signal Desk windows.",
+  "windows": ["workspace", "inbox"],
+  "permissions": ["core:default"]
+}

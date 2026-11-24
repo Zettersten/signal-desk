@@ -1,0 +1,32 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "workspace",
+        "title": "Signal Desk",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 640,
+        "minHeight": 500,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "inbox",
+        "title": "Signal Desk Inbox",
+        "url": "index.html?tray=1",
+        "width": 416,
+        "height": 512,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": true,
+        "windowEffects": { "effects": ["popover"], "state": "active", "radius": 13 }
+      }
+    ]
+  },
+  "bundle": { "targets": ["dmg"], "macOS": { "minimumSystemVersion": "26.0" } }
+}

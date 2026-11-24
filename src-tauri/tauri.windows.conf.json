@@ -1,0 +1,35 @@
+{
+  "app": {
+    "windows": [
+      {
+        "label": "workspace",
+        "title": "Signal Desk",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 640,
+        "minHeight": 500,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "inbox",
+        "title": "Signal Desk Inbox",
+        "url": "index.html?tray=1",
+        "width": 416,
+        "height": 512,
+        "visible": false,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": false,
+        "windowEffects": { "effects": ["acrylic"] }
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "windows": { "nsis": { "installMode": "currentUser" }, "webviewInstallMode": { "type": "skip" } }
+  }
+}

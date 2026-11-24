@@ -1,0 +1,17 @@
+{
+  "identifier": "workspace",
+  "description": "Opt-in sign-in launch and user-initiated workspace sharing.",
+  "windows": ["workspace"],
+  "permissions": [
+    "autostart:default",
+    "clipboard-manager:allow-write-text",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://outlook.office.com/mail/deeplink/compose*" },
+        { "url": "https://*.slack.com/*" },
+        { "url": "https://slack.com/*" }
+      ]
+    }
+  ]
+}
