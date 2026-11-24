@@ -95,6 +95,12 @@ jobs:
             if [ -z "${!name}" ]; then unset "$name"; fi
           done
           args=(--target "$TARGET" --config src-tauri/with-research.json)
+          if [ "$TARGET" = aarch64-unknown-linux-gnu ]; then
+            # linuxdeploy's bundled strip can fail on newer ARM64 system libraries.
+            # Rust still strips the application binary in its release profile.
+            export NO_STRIP=1
+            args+=(--verbose)
+          fi
           stage=()
           if [ "$SIGNED_RELEASE" = true ]; then
             node scripts/release.mjs config src-tauri/.updater-release.json
