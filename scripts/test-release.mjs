@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { makeManifest, stageBundles, targets, updaterConfig } from './release.mjs'
+import { linuxWorkerConfig, makeManifest, stageBundles, targets, updaterConfig } from './release.mjs'
 
 const repo = 'Zettersten/signal-desk'
 const version = '1.2.3'
@@ -30,6 +30,13 @@ test('release configuration pins HTTPS stable releases and requires versioned si
   assert.throws(() => updaterConfig(repo, ''), /TAURI_UPDATER_PUBLIC_KEY/)
   assert.throws(() => updaterConfig('malformed/repo/extra', key), /owner\/name/)
   assert.throws(() => updaterConfig(repo, 'key'), /TAURI_UPDATER_PUBLIC_KEY/)
+})
+
+test('ships the Linux worker as an opaque resource rather than a relocatable executable', () => {
+  assert.deepEqual(linuxWorkerConfig('aarch64-unknown-linux-gnu'), {
+    bundle: { resources: { 'binaries/signal-research-aarch64-unknown-linux-gnu.gz': 'signal-research.gz' } },
+  })
+  assert.throws(() => linuxWorkerConfig('aarch64-apple-darwin'), /Unsupported Linux worker target/)
 })
 
 test('stages the right asset and signature for every platform and rejects incomplete or mismatched releases', () => {

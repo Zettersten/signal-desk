@@ -229,14 +229,10 @@ async fn run_research(
         return Err("Another brief is already running.".into());
     }
     let guard = ResearchGuard;
-    let exe = std::env::current_exe().map_err(|_| "Cannot locate the app")?;
-    let sidecar = exe.with_file_name(if cfg!(windows) {
-        "signal-research.exe"
-    } else {
-        "signal-research"
-    });
+    let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
+        let (sidecar, _worker_dir) = research_worker_path(&app)?;
         // The SDK may write diagnostics to stdout. Keep the brief in a separate,
         // user-private result file and remove the file when this request ends.
         let output_dir = tempfile::Builder::new()
@@ -299,6 +295,60 @@ async fn run_research(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn research_worker_path(
+    app: &tauri::AppHandle,
+) -> Result<(std::path::PathBuf, Option<tempfile::TempDir>), String> {
+    let exe = std::env::current_exe().map_err(|_| "Cannot locate the app")?;
+    let adjacent = exe.with_file_name(if cfg!(windows) {
+        "signal-research.exe"
+    } else {
+        "signal-research"
+    });
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use tauri::path::BaseDirectory;
+
+        let resource = app
+            .path()
+            .resolve("signal-research.gz", BaseDirectory::Resource)
+            .map_err(|_| "Cannot locate the bundled OpenCode resource")?;
+        if resource.is_file() {
+            let data = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|_| "Cannot locate user storage")?;
+            let failure = "Could not unpack the bundled OpenCode worker into user storage";
+            std::fs::create_dir_all(&data).map_err(|_| failure)?;
+            let dir = tempfile::Builder::new()
+                .prefix("signal-desk-worker-")
+                .tempdir_in(data)
+                .map_err(|_| failure)?;
+            let path = dir.path().join("signal-research");
+            let mut output = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&path)
+                .map_err(|_| failure)?;
+            let source = std::fs::File::open(resource).map_err(|_| failure)?;
+            const MAX_WORKER_SIZE: u64 = 300 * 1024 * 1024;
+            let size = std::io::copy(
+                &mut flate2::read::GzDecoder::new(source).take(MAX_WORKER_SIZE + 1),
+                &mut output,
+            )
+            .map_err(|_| failure)?;
+            if size == 0 || size > MAX_WORKER_SIZE {
+                return Err(failure.into());
+            }
+            return Ok((path, Some(dir)));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+    Ok((adjacent, None))
 }
 
 fn main() {

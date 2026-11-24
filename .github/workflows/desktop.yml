@@ -94,12 +94,12 @@ jobs:
           for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
             if [ -z "${!name}" ]; then unset "$name"; fi
           done
-          args=(--target "$TARGET" --config src-tauri/with-research.json)
-          if [ "$TARGET" = aarch64-unknown-linux-gnu ]; then
-            # linuxdeploy's bundled strip can fail on newer ARM64 system libraries.
-            # Rust still strips the application binary in its release profile.
-            export NO_STRIP=1
-            args+=(--verbose)
+          args=(--target "$TARGET")
+          if [ "$RUNNER_OS" = Linux ]; then
+            node scripts/release.mjs linux-worker-config "$TARGET" src-tauri/.linux-worker.json
+            args+=(--config src-tauri/.linux-worker.json --verbose)
+          else
+            args+=(--config src-tauri/with-research.json)
           fi
           stage=()
           if [ "$SIGNED_RELEASE" = true ]; then
@@ -112,6 +112,22 @@ jobs:
           fi
           npm run tauri -- build "${args[@]}" -- --locked
           node scripts/release.mjs stage "$TARGET" "src-tauri/target/$TARGET/release/bundle" staged "${stage[@]}"
+      - name: Verify the packaged Linux worker
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          images=("$GITHUB_WORKSPACE"/staged/*.AppImage)
+          test "${#images[@]}" -eq 1 && test -x "${images[0]}"
+          extracted=$(mktemp -d "$RUNNER_TEMP/signal-image.XXXXXX")
+          trap 'rm -rf -- "$extracted"' EXIT
+          cd "$extracted"
+          "${images[0]}" --appimage-extract >/dev/null
+          mapfile -d '' resources < <(find squashfs-root -type f -name signal-research.gz -print0)
+          test "${#resources[@]}" -eq 1
+          gzip -dc "${resources[0]}" | cmp - "$GITHUB_WORKSPACE/src-tauri/binaries/signal-research-$TARGET"
+          printf 'Verified the exact inference-tested worker in %s\n' "${images[0]##*/}"
       - uses: actions/upload-artifact@v7
         with:
           name: signal-desk-${{ matrix.target }}

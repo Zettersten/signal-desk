@@ -1,5 +1,8 @@
+import { createReadStream, createWriteStream } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { platform, arch } from 'node:process'
+import { pipeline } from 'node:stream/promises'
+import { createGzip } from 'node:zlib'
 
 const rustTarget = process.argv[2] || (await Bun.$`rustc -vV`.text()).match(/^host: (.+)$/m)?.[1]
 if (!rustTarget) throw new Error('Rust target not available')
@@ -17,6 +20,7 @@ const base = new URL('../src-tauri/', import.meta.url)
 const { fileURLToPath } = await import('node:url')
 const output = (folder: string, name: string) => fileURLToPath(new URL(`${folder}/${name}`, base))
 await mkdir(output('binaries', ''), { recursive: true })
+const binary = output('binaries', `signal-research-${rustTarget}${exe}`)
 const result = await Bun.build({
   entrypoints: [fileURLToPath(new URL('./index.ts', import.meta.url))],
   compile: {
@@ -25,7 +29,7 @@ const result = await Bun.build({
     ...(platform === 'win32' && arch === 'x64' && rustTarget === 'x86_64-pc-windows-msvc'
       ? {}
       : { target: bunTarget as Bun.Build.CompileTarget }),
-    outfile: output('binaries', `signal-research-${rustTarget}${exe}`),
+    outfile: binary,
   },
   plugins: [
     {
@@ -47,3 +51,7 @@ const result = await Bun.build({
   ],
 })
 if (!result.success) throw new AggregateError(result.logs, 'Could not compile the OpenCode worker')
+if (rustTarget.endsWith('-unknown-linux-gnu')) {
+  // linuxdeploy must not rewrite Bun's executable with patchelf or strip.
+  await pipeline(createReadStream(binary), createGzip(), createWriteStream(`${binary}.gz`))
+}

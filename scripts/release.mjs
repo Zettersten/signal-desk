@@ -12,6 +12,12 @@ export const targets = {
 
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const repoPattern = /^[a-z\d][a-z\d-]*\/[a-z\d][a-z\d_.-]*$/i
+export function linuxWorkerConfig(target) {
+  if (!Object.hasOwn(targets, target) || !targets[target].platform.startsWith('linux-')) {
+    throw new Error(`Unsupported Linux worker target: ${target}`)
+  }
+  return { bundle: { resources: { [`binaries/signal-research-${target}.gz`]: 'signal-research.gz' } } }
+}
 const stableVersion = (version) => {
   if (!versionPattern.test(version))
     throw new Error('The release version must be stable SemVer (major.minor.patch).')
@@ -117,7 +123,9 @@ export function makeManifest({ repo, version, assets, key }) {
 function main([command, ...args]) {
   const repo = process.env.GITHUB_REPOSITORY || 'Zettersten/signal-desk'
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
-  if (command === 'config' && args.length === 1) {
+  if (command === 'linux-worker-config' && args.length === 2) {
+    writeFileSync(args[1], JSON.stringify(linuxWorkerConfig(args[0])))
+  } else if (command === 'config' && args.length === 1) {
     if (!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim())
       throw new Error('Set the TAURI_SIGNING_PRIVATE_KEY secret for tagged builds.')
     if (process.env.GITHUB_REF_NAME !== `v${stableVersion(version)}`)
