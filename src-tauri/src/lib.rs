@@ -515,8 +515,15 @@ pub fn run() {
             }
             _ => {}
         })
-        .build(context)
-        .expect("failed to start Signal Desk");
+        .build(context);
+    let app = match app {
+        Ok(app) => app,
+        Err(error) if startup_smoke => {
+            startup_smoke_report(false, &format!("Desktop initialization failed: {error}"));
+            std::process::exit(1);
+        }
+        Err(error) => panic!("failed to start Signal Desk: {error}"),
+    };
     app.run(move |app, event| {
         if startup_smoke && matches!(event, tauri::RunEvent::Ready) {
             let test = (|| -> Result<(), String> {
@@ -541,8 +548,8 @@ pub fn run() {
                 Ok(())
             })();
             match test {
-                Ok(()) => { println!("Signal Desk native menus, reader window lifecycle, titles and zoom initialized successfully."); app.exit(0); }
-                Err(error) => { eprintln!("Native reader smoke test failed: {error}"); app.exit(1); }
+                Ok(()) => finish_startup_smoke(app, true, "Signal Desk native menus, reader window lifecycle, titles and zoom initialized successfully."),
+                Err(error) => finish_startup_smoke(app, false, &format!("Native reader smoke test failed: {error}")),
             }
         }
         #[cfg(target_os = "macos")]
@@ -556,4 +563,21 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = (app, event);
     });
+}
+
+fn finish_startup_smoke(app: &tauri::AppHandle, passed: bool, message: &str) {
+    startup_smoke_report(passed, message);
+    app.exit(if passed { 0 } else { 1 });
+}
+
+fn startup_smoke_report(passed: bool, message: &str) {
+    // Windows GUI executables need not have console handles, even with a redirected parent process.
+    if let Some(path) = std::env::var_os("SIGNAL_DESK_SMOKE_REPORT") {
+        let _ = std::fs::write(path, message);
+    }
+    if passed {
+        println!("{message}");
+    } else {
+        eprintln!("{message}");
+    }
 }

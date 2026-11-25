@@ -138,10 +138,15 @@ jobs:
       - name: Smoke-test the macOS app bundle
         if: runner.os == 'macOS'
         shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
         run: |
-          executable="src-tauri/target/$TARGET/release/bundle/macos/Signal Desk.app/Contents/MacOS/signal-desk"
+          images=(staged/*.dmg)
+          test "${#images[@]}" -eq 1 && test -f "${images[0]}"
+          qa=$(mktemp -d "$RUNNER_TEMP/signal-mac.XXXXXX")
+          mkdir "$qa/mount"
+          hdiutil attach "${images[0]}" -readonly -nobrowse -mountpoint "$qa/mount"
+          trap 'hdiutil detach "$qa/mount" >/dev/null' EXIT
+          ditto "$qa/mount/Signal Desk.app" "$qa/Signal Desk.app"
+          executable="$qa/Signal Desk.app/Contents/MacOS/signal-desk"
           python3 -c 'import subprocess, sys; subprocess.run([sys.argv[1], "--startup-smoke"], timeout=60, check=True)' "$executable"
       - name: Smoke-test the installed Windows app
         if: runner.os == 'Windows'
@@ -153,8 +158,10 @@ jobs:
           $install = Start-Process $installer[0].FullName -ArgumentList "/S /D=$destination" -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
           $exe = Join-Path $destination 'signal-desk.exe'
+          $env:SIGNAL_DESK_SMOKE_REPORT = Join-Path $env:RUNNER_TEMP 'signal-desk-startup.txt'
           $app = Start-Process $exe -ArgumentList '--startup-smoke' -PassThru
           if (!$app.WaitForExit(60000)) { $app.Kill(); throw 'Installed Signal Desk did not exit after its startup test' }
+          if (Test-Path $env:SIGNAL_DESK_SMOKE_REPORT) { Get-Content $env:SIGNAL_DESK_SMOKE_REPORT } else { throw "No startup report; app exited with $($app.ExitCode)" }
           if ($app.ExitCode -ne 0) { throw "Installed Signal Desk exited with $($app.ExitCode)" }
       - uses: actions/upload-artifact@v7
         with:
