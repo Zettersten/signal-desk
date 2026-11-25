@@ -13,3 +13,7 @@ Before calling the experience 10/10 on a platform, test these scenarios on its s
 | Installed startup | Run the packaged startup smoke test. It verifies the app menu, both reader window routes, title assignment and zoom. It does not exercise menu interaction or assistive technology. |
 
 macOS uses the system menu bar and traffic lights. Windows uses its window menus and standard installer; Linux delegates menus and file reveal to the available desktop environment. Check at least one supported desktop session rather than treating an Xvfb run as full interaction coverage.
+
+### Repeatable macOS file-reveal check
+
+Run a debug build copied from its DMG with `--export-reveal-smoke`. The test writes a synthetic Markdown file through the same post-dialog write path used by real exports, then submits the tracked path to Finder. Compare the printed path with `osascript -e 'tell application "Finder" to get POSIX path of (item 1 of (get selection) as alias)'`. The test requires Apple Events permission for Finder to query the selection. It verifies the native handoff, not keyboard operation of the Save dialog. The synthetic file is in a temporary directory and can be removed after the check.

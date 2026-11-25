@@ -180,14 +180,23 @@ async fn save_artifact(
             return Ok(false);
         };
         let path = path.into_path().map_err(|e| e.to_string())?;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        if let Ok(mut last) = app.state::<desktop_menu::LastExport>().0.lock() {
-            *last = Some(path);
-        }
+        write_export(&app, path, &bytes)?;
         Ok(true)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn write_export(
+    app: &tauri::AppHandle,
+    path: std::path::PathBuf,
+    bytes: &[u8],
+) -> Result<(), String> {
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    if let Ok(mut last) = app.state::<desktop_menu::LastExport>().0.lock() {
+        *last = Some(path);
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -374,9 +383,14 @@ fn research_worker_path(
 pub fn run() {
     let context = tauri::generate_context!();
     let startup_smoke = std::env::args().any(|arg| arg == "--startup-smoke");
+    #[cfg(debug_assertions)]
+    let export_smoke = std::env::args().any(|arg| arg == "--export-reveal-smoke");
+    #[cfg(not(debug_assertions))]
+    let export_smoke = false;
+    let test_launch = startup_smoke || export_smoke;
     let builder = tauri::Builder::default();
     // Do not send a test launch to an already running user instance.
-    let builder = if startup_smoke {
+    let builder = if test_launch {
         builder
     } else {
         builder.plugin(tauri_plugin_single_instance::init(|app, args, _| {
@@ -385,7 +399,7 @@ pub fn run() {
             }
         }))
     };
-    let builder = if startup_smoke {
+    let builder = if test_launch {
         builder
     } else {
         use tauri_plugin_window_state::{Builder, StateFlags};
@@ -476,8 +490,8 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-            updates::start(app.handle(), updates, !startup_smoke);
-            if !startup_smoke {
+            updates::start(app.handle(), updates, !test_launch);
+            if !test_launch {
                 digest_clock(app.handle().clone());
                 if !std::env::args().any(|arg| arg == "--background") {
                     show_inbox(app.handle(), None);
@@ -499,7 +513,7 @@ pub fn run() {
                 if matches!(window.label(), "workspace" | "inbox") =>
             {
                 api.prevent_close();
-                if window.label() == "workspace" && !startup_smoke {
+                if window.label() == "workspace" && !test_launch {
                     use tauri_plugin_window_state::{AppHandleExt, StateFlags};
                     let _ = window.app_handle().save_window_state(
                         StateFlags::POSITION | StateFlags::SIZE | StateFlags::MAXIMIZED,
@@ -525,6 +539,25 @@ pub fn run() {
         Err(error) => panic!("failed to start Signal Desk: {error}"),
     };
     app.run(move |app, event| {
+        #[cfg(debug_assertions)]
+        if export_smoke && matches!(event, tauri::RunEvent::Ready) {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = (|| -> Result<(), String> {
+                    if desktop_menu::reveal(&app).is_ok() { return Err("Revealed a file before any export".into()); }
+                    let dir = tempfile::Builder::new().prefix("signal-reveal-").tempdir().map_err(|e| e.to_string())?.keep();
+                    let path = dir.join("signal-desk-qa.md");
+                    write_export(&app, path.clone(), b"# HawkEye 360\n\nSynthetic export acceptance fixture.\n")?;
+                    desktop_menu::reveal(&app)?;
+                    println!("Revealed export: {}", path.display());
+                    Ok(())
+                })();
+                match result {
+                    Ok(()) => finish_startup_smoke(&app, true, "Native file-manager reveal returned successfully."),
+                    Err(error) => finish_startup_smoke(&app, false, &error),
+                }
+            });
+        }
         if startup_smoke && matches!(event, tauri::RunEvent::Ready) {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {

@@ -162,7 +162,7 @@ pub fn set_desktop_zoom(window: tauri::WebviewWindow, percent: u16) -> Result<()
         .map_err(|e| e.to_string())
 }
 
-fn reveal(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn reveal(app: &AppHandle) -> Result<(), String> {
     let path = app
         .state::<LastExport>()
         .0
