@@ -103,7 +103,7 @@ async function run(input: Request) {
               )
             : ''
         const text = await generate(
-          `${context}\n\nAnalyst notes, not authoritative: ${audit}\n\nWrite a ${input.mode} for this audience with plain-text section titles. Begin with the decision or main takeaway. Follow with evidence and its limitations, business implications for HawkEye 360, and next steps for primary-source verification. Keep it under 800 words.`,
+          `${context}\n\nAnalyst notes, not authoritative: ${audit}\n\nWrite a ${input.mode} for this audience using Markdown level-two headings and short bullet lists where useful. Do not add a document title, HTML, images or links; the application inserts those. Begin with the decision or main takeaway. Follow with evidence and its limitations, business implications for HawkEye 360, and next steps for primary-source verification. Keep it under 800 words.`,
         )
         return {
           title:

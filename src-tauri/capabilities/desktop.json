@@ -2,5 +2,5 @@
   "identifier": "desktop",
   "description": "Local Signal Desk windows.",
   "windows": ["workspace", "inbox"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize"]
 }

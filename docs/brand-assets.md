@@ -1,0 +1,5 @@
+# Branding and sample media
+
+- The app and tray icon are derived from the [HawkEye 360 investor relations site](https://investors.he360.com/)'s publicly served [Apple touch icon](https://d1io3yog0oux5.cloudfront.net/_ec764631bd5553f52fbb357a14d6a637/he360/files/theme/images/favicons/apple-touch-icon.png). macOS uses a monochrome template so the system can tint it; Windows and Linux use the color mark.
+- Sample profile marks are site icons from [Unseenlabs](https://unseenlabs.space/favicon-96x96.png), [Planet](https://www.planet.com/apple-touch-icon.png), [ICEYE](https://www.iceye.com/hubfs/iceye-favicon_2.ico) and [SpaceNews](https://spacenews.com/wp-content/uploads/2024/05/cropped-SN_forza_star-32x32.png). Other profiles use distinct, original marks labeled as illustrative. Marks are identifiers, not endorsements; rights remain with their owners. Confirm branding permission before public distribution.
+- `src/mock/profile-media.ts` supplies a different illustrative diagram for each competitor. These are not company photographs, operational maps or measured data. A live feed can supply company-specific licensed imagery and logos instead.

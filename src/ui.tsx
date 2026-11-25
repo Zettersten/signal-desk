@@ -1,10 +1,38 @@
-import type { ReactNode } from 'react'
+import {
+  cloneElement,
+  isValidElement,
+  useState,
+  type MouseEvent,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
+import { Menu as SystemMenu } from '@tauri-apps/api/menu'
+import { LogicalPosition } from '@tauri-apps/api/dpi'
+import { desktop } from './native'
 import * as Dropdown from '@radix-ui/react-dropdown-menu'
 import * as Context from '@radix-ui/react-context-menu'
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 
 export type Action = { label: string; run: () => void; icon?: ReactNode; disabled?: boolean }
+let lastSystemMenu: SystemMenu | undefined
+let presentingMenu = false
+async function nativePopup(actions: Action[], x: number, y: number) {
+  if (presentingMenu) return
+  presentingMenu = true
+  try {
+    await lastSystemMenu?.close().catch(() => undefined)
+    const menu = await SystemMenu.new({
+      items: actions
+        .slice(0, 80)
+        .map((action) => ({ text: action.label, enabled: !action.disabled, action: action.run })),
+    })
+    lastSystemMenu = menu
+    await menu.popup(new LogicalPosition(x, y))
+  } finally {
+    presentingMenu = false
+  }
+}
 export function Menu({ trigger, actions }: { trigger: ReactNode; actions: Action[] }) {
   return (
     <Dropdown.Root>
@@ -23,6 +51,30 @@ export function Menu({ trigger, actions }: { trigger: ReactNode; actions: Action
   )
 }
 export function RowMenu({ children, actions }: { children: ReactNode; actions: Action[] }) {
+  const [fallback, setFallback] = useState(false)
+  if (desktop && !fallback && isValidElement(children)) {
+    return cloneElement(
+      children as ReactElement<{
+        onContextMenu?: (event: MouseEvent) => void
+        onKeyDown?: (event: React.KeyboardEvent) => void
+      }>,
+      {
+        onContextMenu: (event) => {
+          event.preventDefault()
+          const box = event.currentTarget.getBoundingClientRect()
+          void nativePopup(actions, event.clientX || box.left + 20, event.clientY || box.top + 20).catch(() =>
+            setFallback(true),
+          )
+        },
+        onKeyDown: (event) => {
+          if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+          event.preventDefault()
+          const box = (event.target as HTMLElement).getBoundingClientRect()
+          void nativePopup(actions, box.left + 10, box.bottom).catch(() => setFallback(true))
+        },
+      },
+    )
+  }
   return (
     <Context.Root>
       <Context.Trigger asChild>{children}</Context.Trigger>

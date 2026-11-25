@@ -1,0 +1,6 @@
+{
+  "identifier": "library",
+  "description": "Record and highlight windows may receive library events and copy quotations.",
+  "windows": ["record-*", "highlight-*"],
+  "permissions": ["core:event:default", "core:window:allow-theme", "clipboard-manager:allow-write-text"]
+}

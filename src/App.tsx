@@ -1,11 +1,13 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useReducer, useRef, useState } from 'react'
 import {
   Activity,
   ArrowDownUp,
   ArrowRight,
+  ArrowLeft,
   ArrowUpRight,
   Bell,
   Bookmark,
+  Building2,
   Check,
   ChevronDown,
   ChevronRight,
@@ -20,8 +22,10 @@ import {
   Globe2,
   Inbox,
   Mail,
+  Newspaper,
   PanelLeft,
   Plus,
+  Quote,
   Radar,
   RefreshCw,
   Satellite,
@@ -35,11 +39,23 @@ import {
 } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
-import { categories, mock, sortSignals, type Order, type Signal } from './data'
+import { categories, sortSignals, type Catalog, type Order, type Signal } from './data'
+import { useIntelligence } from './catalog'
+import { QuickOpen } from './QuickOpen'
+import { navigateHistory, workspaceHistory } from './workspace-history'
+import { handleListNavigation } from './desktop-keys'
+import { createAnalysisDocument, isAnalysisDocument } from './analysis-document'
+import { AnalysisPreview } from './AnalysisPreview'
+import { useLocal, type RecordNotes as Notes } from './local'
+import { Profiles } from './library/Profiles'
+import { Scrapbook } from './library/Readers'
+import brand from '../assets/hawkeye-icon.png'
 import {
   copyText,
+  closeDesktopWindow,
   desktop,
   openExternal,
+  openDetail,
   openWorkspace,
   runResearch,
   type Brief,
@@ -51,38 +67,11 @@ import { Menu, Modal, OrbitPlate, RowMenu, type Action } from './ui'
 const params = new URLSearchParams(location.search)
 const compact = params.has('tray')
 const searchShortcut = navigator.platform.includes('Mac') ? '⌘ K' : 'Ctrl K'
-type Notes = Record<
-  string,
-  { saved?: boolean; read?: boolean; folders?: string[]; tags?: string[]; highlight?: string }
->
-type Panel = 'settings' | 'analysis' | 'folder' | 'share' | 'help' | null
-const domainIcons = [Radar, Globe2, Activity, Satellite]
+type Panel = 'settings' | 'analysis' | 'folder' | 'share' | 'help' | 'quick' | null
+const domainIcons = [Radar, Activity, Globe2, Activity, Satellite, Satellite, Activity]
 const formats: Format[] = ['PDF', 'Word', 'PowerPoint']
-function useLocal<T>(key: string, initial: T) {
-  const read = () => {
-    try {
-      return (JSON.parse(localStorage.getItem(key) ?? 'null') as T) ?? initial
-    } catch {
-      return initial
-    }
-  }
-  const [value, setValue] = useState(read)
-  useEffect(() => {
-    const sync = (e: StorageEvent) => {
-      if (e.key === key) setValue(read())
-    }
-    window.addEventListener('storage', sync)
-    return () => window.removeEventListener('storage', sync)
-  }, [key])
-  return [
-    value,
-    (update: T | ((old: T) => T)) => {
-      const next = typeof update === 'function' ? (update as (old: T) => T)(read()) : update
-      localStorage.setItem(key, JSON.stringify(next))
-      setValue(next)
-    },
-  ] as const
-}
+const isLibrary = (view: string) =>
+  ['Competitors', 'Publishers', 'Highlights'].includes(view) || /^(competitor|publisher):/.test(view)
 const fmtTime = (time: string) => {
   const [h, m] = time.split(':')
   return `${Number(h) % 12 || 12}:${m} ${Number(h) < 12 ? 'AM' : 'PM'}`
@@ -101,6 +90,7 @@ const Importance = ({ row }: { row: Signal }) => (
 )
 
 export function App() {
+  const source = useIntelligence()
   const [notes, setNotes] = useLocal<Notes>('signal.notes', {})
   const [folders, setFolders] = useLocal<string[]>('signal.folders', ['Market watch'])
   const [savedBrief, setSavedBrief] = useLocal<Brief | null>('signal.brief', null)
@@ -110,16 +100,21 @@ export function App() {
     slack: '',
   })
   const [token, setToken] = useState('')
-  const [records, setRecords] = useState<Signal[]>([])
+  const [catalog, setCatalog] = useState<Catalog | null>(null)
+  const records = catalog?.records ?? []
   const [loading, setLoading] = useState(true)
   const [feedError, setFeedError] = useState('')
-  const [nav, setNav] = useState('All signals')
+  const [historyUnavailable, setHistoryUnavailable] = useState(false)
+  const [lastView, rememberView] = useLocal('signal.workspace-view', 'All signals')
+  const [navigation, navigate] = useReducer(navigateHistory, params.get('view') || lastView, workspaceHistory)
+  const nav = navigation.current
+  const [recent, setRecent] = useLocal<string[]>('signal.recent-records', [])
+  const [exportNotice, setExportNotice] = useState(false)
   const [quick, setQuick] = useState('All signals')
   const [order, setOrder] = useState<Order>('Latest first')
   const [query, setQuery] = useState('')
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
-  const [detailId, setDetailId] = useState<string | null>(params.get('signal'))
   const [panel, setPanel] = useState<Panel>(null)
   const [folderTarget, setFolderTarget] = useState<string | null>(null)
   const [folderName, setFolderName] = useState('')
@@ -133,12 +128,18 @@ export function App() {
   const [brief, setBrief] = useState<Brief | null>(null)
   const [toast, setToast] = useState('')
   const [railOpen, setRailOpen] = useState(false)
+  const firstInboxRow = useRef<HTMLButtonElement>(null)
   const search = useRef<HTMLInputElement>(null)
+  const pendingFind = useRef(false)
+  const mainPane = useRef<HTMLElement>(null)
   const toastTimer = useRef<number>(0)
   const tell = (message: string) => {
     setToast(message)
     clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(''), 3500)
+    toastTimer.current = window.setTimeout(
+      () => setToast(''),
+      desktop && message.endsWith(' exported') ? 9000 : 3500,
+    )
   }
   const changeNote = (id: string, fn: (previous: Notes[string]) => Notes[string]) =>
     setNotes((prev) => ({ ...prev, [id]: fn(prev[id] ?? {}) }))
@@ -146,42 +147,73 @@ export function App() {
     setLoading(true)
     setFeedError('')
     try {
-      const res = await mock.fetch('/v1/signals')
-      if (!res.ok) throw new Error('Feed unavailable')
-      setRecords((await res.json()).records)
+      setCatalog(await source.loadCatalog())
     } catch {
-      setFeedError('The sample feed couldn’t load. Try refreshing.')
+      setFeedError('The intelligence catalog couldn’t load. Try refreshing.')
     } finally {
       setLoading(false)
     }
   }
   useEffect(() => {
+    const showHistoryWarning = () => setHistoryUnavailable(true)
+    window.addEventListener('profile-history-unavailable', showHistoryWarning)
     void reload()
+    return () => window.removeEventListener('profile-history-unavailable', showHistoryWarning)
   }, [])
+  useEffect(() => {
+    if (!compact || !desktop) return
+    let active = true
+    let stop: (() => void) | undefined
+    void listen('inbox-focused', () => firstInboxRow.current?.focus())
+      .then((fn) => {
+        if (active) stop = fn
+        else fn()
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [])
+  useEffect(() => {
+    if (compact && desktop && document.hasFocus()) firstInboxRow.current?.focus()
+  }, [records.length])
   useEffect(() => {
     if (!desktop || compact) return
     let stop: undefined | (() => void)
     let cancelled = false
-    void listen<string>('workspace-signal', (event) => setDetailId(event.payload)).then((fn) => {
-      if (cancelled) fn()
-      else stop = fn
+    void listen<string>('workspace-view', (event) => {
+      navigate({ visit: event.payload })
+      setSelecting(false)
+      setSelected([])
+      setQuick('All signals')
+      setQuery('')
+      setRailOpen(false)
     })
+      .then((fn) => {
+        if (cancelled) fn()
+        else stop = fn
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
       stop?.()
     }
   }, [])
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        search.current?.focus()
+    mainPane.current?.scrollTo(0, 0)
+    if (!compact) {
+      try {
+        rememberView(nav)
+      } catch {
+        /* The workspace still works if storage is unavailable. */
       }
-      if (compact && desktop && e.key === 'Escape') void invoke('hide_inbox')
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    if (pendingFind.current && !isLibrary(nav)) {
+      pendingFind.current = false
+      search.current?.focus()
+    }
+  }, [nav])
 
   const rows = sortSignals(
     records.filter((row) => {
@@ -203,7 +235,6 @@ export function App() {
     order,
   )
   const chosen = selecting ? records.filter((r) => selected.includes(r.id)) : []
-  const detail = records.find((r) => r.id === detailId)
   const toggle = (id: string) =>
     setSelected((old) => (old.includes(id) ? old.filter((key) => key !== id) : [...old, id]))
   const bookmark = (id: string) => {
@@ -212,18 +243,118 @@ export function App() {
   }
   const readRow = (id: string) => {
     changeNote(id, (old) => ({ ...old, read: true }))
-    setDetailId(id)
+    void openDetail('record', id)
+      .then(() => setRecent((old) => [id, ...old.filter((key) => key !== id)].slice(0, 12)))
+      .catch(() => tell('Could not open the record window.'))
   }
-  const chooseNav = (name: string) => {
-    setNav(name)
+  const resetViewTools = () => {
+    setSelecting(false)
+    setSelected([])
     setQuick('All signals')
     setQuery('')
     setRailOpen(false)
   }
+  const traverse = (direction: 'back' | 'forward') => {
+    navigate(direction)
+    resetViewTools()
+  }
+  const chooseNav = (name: string) => {
+    navigate({ visit: name })
+    resetViewTools()
+  }
+  const findSignals = () => {
+    if (search.current) search.current.focus()
+    else {
+      pendingFind.current = true
+      chooseNav('All signals')
+    }
+  }
+  useEffect(() => {
+    if (compact || !desktop) return
+    let active = true
+    let stop: (() => void) | undefined
+    void listen<string>('desktop-action', (event) => {
+      if (busy) return
+      if (event.payload === 'settings') setPanel('settings')
+      if (event.payload === 'find') {
+        setPanel(null)
+        requestAnimationFrame(findSignals)
+      }
+      if (event.payload === 'refresh') void reload()
+      if (event.payload === 'quick' && catalog) setPanel('quick')
+      if (event.payload === 'back' || event.payload === 'forward') {
+        setPanel(null)
+        traverse(event.payload)
+      }
+    })
+      .then((unlisten) => {
+        if (active) stop = unlisten
+        else unlisten()
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      stop?.()
+    }
+  }, [nav, source, busy, catalog])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return
+      const primary = e.metaKey || e.ctrlKey
+      const key = e.key.toLowerCase()
+      if (compact) {
+        if (desktop && key === 'escape') void invoke('hide_inbox')
+        return
+      }
+      if (panel || (e.target instanceof Element && e.target.closest('[role="menu"]'))) return
+      if (primary && key === 'o' && catalog) {
+        e.preventDefault()
+        setPanel('quick')
+        return
+      }
+      if (primary && key === 'k') {
+        e.preventDefault()
+        findSignals()
+        return
+      }
+      if (primary && key === 'w' && desktop) {
+        e.preventDefault()
+        void closeDesktopWindow().catch(() => undefined)
+        return
+      }
+      if (
+        e.target instanceof Element &&
+        e.target.closest('input:not([type="checkbox"]), textarea, select, [contenteditable="true"]')
+      )
+        return
+      if (
+        (e.altKey && !primary && (key === 'arrowleft' || key === 'arrowright')) ||
+        (primary && (key === '[' || key === ']'))
+      ) {
+        e.preventDefault()
+        traverse(key === 'arrowleft' || key === '[' ? 'back' : 'forward')
+        return
+      }
+      if (key === 'escape' && selecting) {
+        e.preventDefault()
+        setSelecting(false)
+        setSelected([])
+      }
+      if (primary && key === 'a' && selecting) {
+        e.preventDefault()
+        setSelected((old) => [...new Set([...old, ...rows.map((row) => row.id)])])
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
   const save = (doc: Brief, format: Format) => {
     void exportBrief(doc, format)
       .then((saved) => {
-        if (saved) tell(`${format} exported`)
+        if (saved) {
+          setExportNotice(desktop)
+          tell(`${format} exported`)
+        }
       })
       .catch(() => tell(`Couldn’t export ${format}. Try a different location.`))
   }
@@ -247,6 +378,16 @@ export function App() {
   }
   const rowActions = (row: Signal): Action[] => [
     {
+      label: `Competitor: ${row.company}`,
+      icon: <Building2 size={15} />,
+      run: () => chooseNav(`competitor:${row.competitorId}`),
+    },
+    {
+      label: `Publisher: ${row.publisher}`,
+      icon: <Newspaper size={15} />,
+      run: () => chooseNav(`publisher:${row.publisherId}`),
+    },
+    {
       label: notes[row.id]?.saved ? 'Remove bookmark' : 'Save to Read later',
       icon: <Bookmark size={15} />,
       run: () => bookmark(row.id),
@@ -263,24 +404,25 @@ export function App() {
       run: () => {
         setSelecting(true)
         setSelected((old) => (old.includes(row.id) ? old : [...old, row.id]))
-        setDetailId(null)
       },
     },
     { label: 'Export PDF', icon: <Download size={15} />, run: () => save(signalBrief([row]), 'PDF') },
     { label: 'Share signal…', icon: <Share2 size={15} />, run: () => share(signalBrief([row])) },
   ]
   function startAnalysis(existing?: Brief | null) {
+    if (!existing && !chosen.length) return
     setBrief(existing ?? null)
     setFormError('')
     setPanel('analysis')
   }
   const createBrief = async () => {
+    if (!chosen.length || !objective.trim() || busy) return
     setFormError('')
     setBusy(true)
     try {
       const input = { records: chosen, objective: objective.trim(), audience, mode }
       let result: Brief
-      if (live) {
+      if (live && catalog?.mode !== 'live') {
         const provider: Provider = {
           endpoint: providerSettings.endpoint,
           model: providerSettings.model,
@@ -290,12 +432,11 @@ export function App() {
           throw new Error('Open the desktop app and enter the endpoint, model and session token in Settings.')
         result = await runResearch(input, provider)
       } else {
-        const res = await mock.fetch('/v1/briefs', { method: 'POST', body: JSON.stringify(input) })
-        if (!res.ok) throw new Error('The sample brief could not be generated.')
-        result = await res.json()
+        result = await source.createBrief(input)
       }
-      setBrief(result)
-      setSavedBrief(result)
+      const document = createAnalysisDocument(result, input.records)
+      setBrief(document)
+      setSavedBrief(document)
     } catch (e) {
       setFormError(errorText(e))
     } finally {
@@ -346,7 +487,7 @@ export function App() {
       <section className="mini">
         <header>
           <span className="brand-icon">
-            <Radar size={20} />
+            <img src={brand} alt="" />
           </span>
           <div>
             <strong>Signal Desk</strong>
@@ -362,23 +503,27 @@ export function App() {
           </button>
         </header>
         <div className="mini-heading">
-          Latest signals <span>Sample feed</span>
+          Latest signals <span>{catalog?.mode === 'live' ? 'Live feed' : 'Sample feed'}</span>
         </div>
-        <div className="mini-list">
+        <div className="mini-list" onKeyDown={handleListNavigation}>
           {loading && <p className="mini-empty">Loading signals…</p>}
+          {toast && (
+            <p role="status" className="mini-empty">
+              {toast}
+            </p>
+          )}
           {feedError && (
             <button className="button" onClick={() => void reload()}>
               Retry feed
             </button>
           )}
-          {records.slice(0, 10).map((row) => (
+          {records.slice(0, 10).map((row, index) => (
             <button
               className="mini-row"
+              data-list-row
+              ref={index === 0 ? firstInboxRow : undefined}
               key={row.id}
-              onClick={() => {
-                changeNote(row.id, (old) => ({ ...old, read: true }))
-                void openWorkspace(row.id)
-              }}
+              onClick={() => readRow(row.id)}
             >
               <Mark row={row} />
               <span className="mini-copy">
@@ -399,14 +544,35 @@ export function App() {
       </section>
     )
 
-  const sidebarItem = (name: string, icon: React.ReactNode, count?: number, label = name) => (
-    <button key={name} className={`nav-item ${nav === name ? 'active' : ''}`} onClick={() => chooseNav(name)}>
-      {icon}
-      <span>{label}</span>
-      {!!count && <small>{count}</small>}
-    </button>
-  )
-  const title = nav.startsWith('folder:') ? nav.slice(7) : nav === 'All signals' ? 'Intelligence feed' : nav
+  const sidebarItem = (name: string, icon: React.ReactNode, count?: number, label = name) => {
+    const active =
+      nav === name ||
+      (name === 'Competitors' && nav.startsWith('competitor:')) ||
+      (name === 'Publishers' && nav.startsWith('publisher:'))
+    return (
+      <button
+        key={name}
+        title={label}
+        aria-current={active ? 'page' : undefined}
+        className={`nav-item ${active ? 'active' : ''}`}
+        onClick={() => chooseNav(name)}
+      >
+        {icon}
+        <span>{label}</span>
+        {!!count && <small>{count}</small>}
+      </button>
+    )
+  }
+  const library = isLibrary(nav)
+  const title = nav.startsWith('folder:')
+    ? nav.slice(7)
+    : nav === 'All signals'
+      ? 'Intelligence feed'
+      : nav.startsWith('competitor:')
+        ? (catalog?.competitors.find((c) => c.id === nav.slice(11))?.name ?? 'Competitor')
+        : nav.startsWith('publisher:')
+          ? (catalog?.publishers.find((p) => p.id === nav.slice(10))?.name ?? 'Publisher')
+          : nav
   const exports = (doc: Brief): Action[] =>
     formats.map((format) => ({
       label: `Export ${format}`,
@@ -418,10 +584,11 @@ export function App() {
   }
   return (
     <div className="shell">
-      <aside className={`rail ${railOpen ? 'rail-open' : ''}`}>
+      <div className="mac-title-drag" data-tauri-drag-region aria-hidden="true" />
+      <aside id="workspace-sidebar" className={`rail ${railOpen ? 'rail-open' : ''}`}>
         <div className="brand" data-tauri-drag-region>
           <span className="brand-icon">
-            <Radar size={23} />
+            <img src={brand} alt="" />
           </span>
           <div>
             <strong>Signal Desk</strong>
@@ -433,16 +600,12 @@ export function App() {
             <div className="nav-label">Workspace</div>
             {sidebarItem('All signals', <Inbox />, records.length)}
             {sidebarItem('Read later', <Bookmark />, records.filter((r) => notes[r.id]?.saved).length)}
-            <button
-              className={`nav-item ${selecting ? 'active' : ''}`}
-              onClick={() => {
-                chooseNav('All signals')
-                setSelecting(true)
-              }}
-            >
-              <Sparkles />
-              <span>Strategic analysis</span>
-            </button>
+          </div>
+          <div className="nav-group">
+            <div className="nav-label">Library</div>
+            {sidebarItem('Competitors', <Building2 />)}
+            {sidebarItem('Publishers', <Newspaper />)}
+            {sidebarItem('Highlights', <Quote />)}
           </div>
           <div className="nav-group">
             <div className="nav-label">Domains</div>
@@ -491,13 +654,35 @@ export function App() {
           </div>
         </div>
       </aside>
-      <main>
+      <main ref={mainPane} className="workspace-main">
         <header className="topbar" data-tauri-drag-region>
           <div className="crumb">
+            <div className="history-controls">
+              <button
+                className="icon"
+                title="Back"
+                aria-label="Back"
+                disabled={!navigation.back.length}
+                onClick={() => traverse('back')}
+              >
+                <ArrowLeft size={15} />
+              </button>
+              <button
+                className="icon"
+                title="Forward"
+                aria-label="Forward"
+                disabled={!navigation.forward.length}
+                onClick={() => traverse('forward')}
+              >
+                <ArrowRight size={15} />
+              </button>
+            </div>
             <button
               className="icon rail-toggle"
               title="Toggle sidebar"
               aria-label="Toggle sidebar"
+              aria-expanded={railOpen}
+              aria-controls="workspace-sidebar"
               onClick={() => setRailOpen(!railOpen)}
             >
               <PanelLeft size={16} />
@@ -509,11 +694,20 @@ export function App() {
           <div className="top-actions">
             <button
               className="icon"
+              title="Quick Open"
+              aria-label="Quick Open"
+              disabled={!catalog}
+              onClick={() => setPanel('quick')}
+            >
+              <Search size={16} />
+            </button>
+            <button
+              className="icon"
               title="Refresh signals"
               aria-label="Refresh signals"
               onClick={() => {
                 void reload()
-                tell('Refreshing sample feed')
+                tell('Refreshing the intelligence catalog')
               }}
             >
               <RefreshCw size={16} />
@@ -526,293 +720,307 @@ export function App() {
             >
               <Bell size={17} />
             </button>
-            <span className="sample-label">Sample feed</span>
+            <span className="sample-label">{catalog?.mode === 'live' ? 'Live feed' : 'Sample feed'}</span>
           </div>
         </header>
-        <div className="content">
-          <div className="page-title">
-            <div>
-              <h1>{selecting ? 'Strategic analysis' : title}</h1>
-              <p>
-                {selecting
-                  ? 'Select evidence to build a decision-ready brief.'
-                  : nav === 'All signals'
+        {library ? (
+          nav === 'Highlights' ? (
+            <Scrapbook />
+          ) : catalog ? (
+            <Profiles
+              key={nav}
+              catalog={catalog}
+              view={nav}
+              navigate={chooseNav}
+              open={readRow}
+              historyUnavailable={historyUnavailable}
+            />
+          ) : (
+            <div className="content">
+              <p role="status">{feedError || 'Loading profiles…'}</p>
+              {feedError && (
+                <button className="button" onClick={() => void reload()}>
+                  Retry
+                </button>
+              )}
+            </div>
+          )
+        ) : (
+          <div className="content">
+            <div className="page-title">
+              <div>
+                <h1>{title}</h1>
+                <p>
+                  {nav === 'All signals'
                     ? 'Competitive signals across the commercial space landscape.'
                     : 'Browse and organize the signals in this view.'}
-              </p>
-            </div>
-            <button
-              className="button primary"
-              onClick={() => {
-                if (selecting) startAnalysis()
-                else {
-                  setSelecting(true)
-                  chooseNav('All signals')
-                }
-              }}
-              disabled={selecting && chosen.length < 2}
-            >
-              <Sparkles size={16} />
-              {selecting ? 'Build brief' : 'New analysis'}
-            </button>
-          </div>
-          {nav === 'All signals' && !selecting && (
-            <section className="digest">
-              <OrbitPlate />
-              <div className="digest-body">
-                <div className="digest-title">
-                  <span className="digest-icon">
-                    <RadioWave />
-                  </span>
-                  <h2>Morning digest</h2>
-                </div>
-                <p>A snapshot of the signals shaping your market.</p>
-                <div className="digest-facts">
-                  <span>
-                    <strong>{records.length}</strong> signals
-                  </span>
-                  <span>
-                    <strong>{records.filter((r) => r.importance >= 85).length}</strong> high importance
-                  </span>
-                  <span>
-                    <Clock3 size={13} /> 8:00 AM digest
-                  </span>
-                </div>
-              </div>
-              <button
-                className="button digest-button"
-                onClick={() => {
-                  setQuick('High importance')
-                  document.getElementById('signal-list')?.scrollIntoView({ block: 'nearest' })
-                }}
-              >
-                Review priority signals <ArrowUpRight size={15} />
-              </button>
-            </section>
-          )}
-          <section id="signal-list" className="queue" aria-label="Signals">
-            <div className="queue-controls">
-              <div className="tabs" role="group" aria-label="Filter signals">
-                {['All signals', 'High importance', 'Unread'].map((tab) => (
-                  <button
-                    key={tab}
-                    className={quick === tab ? 'current' : ''}
-                    aria-pressed={quick === tab}
-                    onClick={() => setQuick(tab)}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
-              <div className="tools">
-                <label className="search">
-                  <Search size={15} />
-                  <input
-                    ref={search}
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder="Search signals…"
-                    aria-label="Search signals"
-                  />
-                  {query ? (
-                    <button className="icon" aria-label="Clear search" onClick={() => setQuery('')}>
-                      <X size={13} />
-                    </button>
-                  ) : (
-                    <kbd>{searchShortcut}</kbd>
-                  )}
-                </label>
-                <Menu
-                  trigger={
-                    <button className="button compact-button" title="Filter signals">
-                      <SlidersHorizontal size={15} />
-                      <span>Filter</span>
-                    </button>
-                  }
-                  actions={[
-                    ...['All signals', 'High importance', 'Unread'].map((item) => ({
-                      label: item,
-                      run: () => setQuick(item),
-                    })),
-                    ...categories.map((item) => ({ label: item, run: () => chooseNav(item) })),
-                  ]}
-                />
-                <Menu
-                  trigger={
-                    <button
-                      className="button compact-button"
-                      title="Order signals"
-                      aria-label="Order signals"
-                    >
-                      <ArrowDownUp size={15} />
-                    </button>
-                  }
-                  actions={(['Latest first', 'Highest importance', 'Company A–Z'] as Order[]).map((item) => ({
-                    label: item,
-                    icon: order === item ? <Check size={14} /> : undefined,
-                    run: () => setOrder(item),
-                  }))}
-                />
-                <Menu
-                  trigger={
-                    <button
-                      className="button compact-button"
-                      title="Export signals"
-                      aria-label="Export signals"
-                      disabled={!rows.length && !chosen.length}
-                    >
-                      <Download size={15} />
-                      <span>Export</span>
-                      <ChevronDown size={12} />
-                    </button>
-                  }
-                  actions={exports(signalBrief(chosen.length ? chosen : rows))}
-                />
+                </p>
               </div>
             </div>
-            {selecting && (
-              <div className="selection">
-                <span>
-                  <strong>{chosen.length} selected</strong>{' '}
-                  {chosen.length < 2 ? '/ Select at least 2' : '/ Ready for analysis'}
-                </span>
+            {nav === 'All signals' && (
+              <section className="digest">
+                <OrbitPlate />
+                <div className="digest-body">
+                  <div className="digest-title">
+                    <span className="digest-icon">
+                      <RadioWave />
+                    </span>
+                    <h2>Morning digest</h2>
+                  </div>
+                  <p>A snapshot of the signals shaping your market.</p>
+                  <div className="digest-facts">
+                    <span>
+                      <strong>{records.length}</strong> signals
+                    </span>
+                    <span>
+                      <strong>{records.filter((r) => r.importance >= 85).length}</strong> high importance
+                    </span>
+                    <span>
+                      <Clock3 size={13} /> 8:00 AM digest
+                    </span>
+                  </div>
+                </div>
                 <button
-                  className="button"
-                  onClick={() => setSelected((old) => [...new Set([...old, ...rows.map((r) => r.id)])])}
-                >
-                  Select visible
-                </button>
-                <button
-                  className="button"
-                  disabled={!chosen.length}
-                  onClick={() => share(signalBrief(chosen))}
-                >
-                  <Share2 size={14} /> Share
-                </button>
-                {savedBrief && (
-                  <button className="button" onClick={() => startAnalysis(savedBrief)}>
-                    Last brief
-                  </button>
-                )}
-                <button
-                  className="icon"
-                  aria-label="Exit selection"
+                  className="button digest-button"
                   onClick={() => {
-                    setSelecting(false)
-                    setSelected([])
+                    setQuick('High importance')
+                    document.getElementById('signal-list')?.scrollIntoView({ block: 'nearest' })
                   }}
                 >
-                  <X size={16} />
+                  Review priority signals <ArrowUpRight size={15} />
                 </button>
-              </div>
+              </section>
             )}
-            <div className="queue-label">
-              <span>
-                {rows.length} {rows.length === 1 ? 'signal' : 'signals'}
-              </span>
-              <button className="text-button" onClick={() => setSelecting(!selecting)}>
-                {selecting ? 'Hide selection' : 'Select'}
-              </button>
-            </div>
-            {loading && !records.length && (
-              <div className="empty" role="status">
-                Loading signals…
-              </div>
-            )}
-            {feedError && (
-              <div className="empty">
-                <p>{feedError}</p>
-                <button className="button" onClick={() => void reload()}>
-                  Retry feed
-                </button>
-              </div>
-            )}
-            {!rows.length && !loading && !feedError && (
-              <div className="empty">
-                <Inbox size={24} />
-                <p>No matching signals.</p>
-                <button className="button" onClick={() => chooseNav('All signals')}>
-                  Show all signals
-                </button>
-              </div>
-            )}
-            {rows.map((row) => (
-              <RowMenu key={row.id} actions={rowActions(row)}>
-                <article className={`signal-row ${selected.includes(row.id) && selecting ? 'selected' : ''}`}>
-                  {selecting && (
+            <section id="signal-list" className="queue" aria-label="Signals">
+              <div className="queue-controls">
+                <div className="tabs" role="group" aria-label="Filter signals">
+                  {['All signals', 'High importance', 'Unread'].map((tab) => (
+                    <button
+                      key={tab}
+                      className={quick === tab ? 'current' : ''}
+                      aria-pressed={quick === tab}
+                      onClick={() => setQuick(tab)}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+                <div className="tools">
+                  <label className="search">
+                    <Search size={15} />
                     <input
-                      className="select-box"
-                      type="checkbox"
-                      checked={selected.includes(row.id)}
-                      onChange={() => toggle(row.id)}
-                      aria-label={`Select ${row.title}`}
+                      ref={search}
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Search signals…"
+                      aria-label="Search signals"
                     />
+                    {query ? (
+                      <button className="icon" aria-label="Clear search" onClick={() => setQuery('')}>
+                        <X size={13} />
+                      </button>
+                    ) : (
+                      <kbd>{searchShortcut}</kbd>
+                    )}
+                  </label>
+                  <Menu
+                    trigger={
+                      <button className="button compact-button" title="Filter signals">
+                        <SlidersHorizontal size={15} />
+                        <span>Filter</span>
+                      </button>
+                    }
+                    actions={[
+                      ...['All signals', 'High importance', 'Unread'].map((item) => ({
+                        label: item,
+                        run: () => setQuick(item),
+                      })),
+                      ...categories.map((item) => ({ label: item, run: () => chooseNav(item) })),
+                    ]}
+                  />
+                  <Menu
+                    trigger={
+                      <button
+                        className="button compact-button"
+                        title="Order signals"
+                        aria-label="Order signals"
+                      >
+                        <ArrowDownUp size={15} />
+                      </button>
+                    }
+                    actions={(['Latest first', 'Highest importance', 'Company A–Z'] as Order[]).map(
+                      (item) => ({
+                        label: item,
+                        icon: order === item ? <Check size={14} /> : undefined,
+                        run: () => setOrder(item),
+                      }),
+                    )}
+                  />
+                  <Menu
+                    trigger={
+                      <button
+                        className="button compact-button"
+                        title="Export signals"
+                        aria-label="Export signals"
+                        disabled={!rows.length && !chosen.length}
+                      >
+                        <Download size={15} />
+                        <span>Export</span>
+                        <ChevronDown size={12} />
+                      </button>
+                    }
+                    actions={exports(signalBrief(chosen.length ? chosen : rows))}
+                  />
+                </div>
+              </div>
+              {selecting && (
+                <div className="selection">
+                  <span>
+                    <strong role="status">{chosen.length} selected</strong>{' '}
+                    {!chosen.length ? '/ Choose signals to analyze' : ''}
+                  </span>
+                  <button
+                    className="button"
+                    onClick={() => setSelected((old) => [...new Set([...old, ...rows.map((r) => r.id)])])}
+                  >
+                    Select visible
+                  </button>
+                  <button
+                    className="button primary"
+                    disabled={!chosen.length}
+                    onClick={() => startAnalysis()}
+                  >
+                    <Sparkles size={15} /> Analyze selection
+                  </button>
+                  <button
+                    className="button"
+                    disabled={!chosen.length}
+                    onClick={() => share(signalBrief(chosen))}
+                  >
+                    <Share2 size={14} /> Share
+                  </button>
+                  {savedBrief && (
+                    <button className="button" onClick={() => startAnalysis(savedBrief)}>
+                      Last brief
+                    </button>
                   )}
                   <button
-                    className="signal-main"
-                    onClick={() => (selecting ? toggle(row.id) : readRow(row.id))}
+                    className="icon"
+                    aria-label="Exit selection"
+                    onClick={() => {
+                      setSelecting(false)
+                      setSelected([])
+                    }}
                   >
-                    <Mark row={row} />
-                    <span className="signal-copy">
-                      <span className="meta">
-                        <strong>{row.publisher}</strong>
-                        <span className="meta-separator" />
-                        <span>{row.company}</span>
-                        <span className="category">{row.category}</span>
-                      </span>
-                      <span className="signal-title">{row.title}</span>
-                      <span className="summary">{row.summary}</span>
-                    </span>
+                    <X size={16} />
                   </button>
-                  <div className="score">
-                    <Importance row={row} />
-                    <time>{fmtTime(row.time)}</time>
-                  </div>
-                  <div className="row-actions">
-                    <button
-                      className={`icon ${notes[row.id]?.saved ? 'bookmarked' : ''}`}
-                      title={notes[row.id]?.saved ? 'Remove bookmark' : 'Save to Read later'}
-                      aria-label={`Bookmark ${row.title}`}
-                      aria-pressed={!!notes[row.id]?.saved}
-                      onClick={() => bookmark(row.id)}
+                </div>
+              )}
+              <div className="queue-label">
+                <span>
+                  {rows.length} {rows.length === 1 ? 'signal' : 'signals'}
+                </span>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    if (selecting) setSelected([])
+                    setSelecting(!selecting)
+                  }}
+                >
+                  {selecting ? 'Hide selection' : 'Select'}
+                </button>
+              </div>
+              {loading && !records.length && (
+                <div className="empty" role="status">
+                  Loading signals…
+                </div>
+              )}
+              {feedError && (
+                <div className="empty">
+                  <p>{feedError}</p>
+                  <button className="button" onClick={() => void reload()}>
+                    Retry feed
+                  </button>
+                </div>
+              )}
+              {!rows.length && !loading && !feedError && (
+                <div className="empty">
+                  <Inbox size={24} />
+                  <p>No matching signals.</p>
+                  <button className="button" onClick={() => chooseNav('All signals')}>
+                    Show all signals
+                  </button>
+                </div>
+              )}
+              <div className="signal-list" onKeyDown={handleListNavigation}>
+                {rows.map((row) => (
+                  <RowMenu key={row.id} actions={rowActions(row)}>
+                    <article
+                      className={`signal-row ${selected.includes(row.id) && selecting ? 'selected' : ''}`}
                     >
-                      <Bookmark size={16} />
-                    </button>
-                    <Menu
-                      trigger={
-                        <button className="icon" aria-label={`Actions for ${row.title}`}>
-                          <Ellipsis size={17} />
+                      {selecting && (
+                        <input
+                          className="select-box"
+                          type="checkbox"
+                          checked={selected.includes(row.id)}
+                          onChange={() => toggle(row.id)}
+                          aria-label={`Select ${row.title}`}
+                        />
+                      )}
+                      <button
+                        className="signal-main"
+                        data-list-row
+                        onClick={() => (selecting ? toggle(row.id) : readRow(row.id))}
+                      >
+                        <Mark row={row} />
+                        <span className="signal-copy">
+                          <span className="meta">
+                            <strong>{row.publisher}</strong>
+                            <span className="meta-separator" />
+                            <span>{row.company}</span>
+                            <span className="category">{row.category}</span>
+                          </span>
+                          <span className="signal-title">{row.title}</span>
+                          <span className="summary">{row.summary}</span>
+                        </span>
+                      </button>
+                      <div className="score">
+                        <Importance row={row} />
+                        <time>{fmtTime(row.time)}</time>
+                      </div>
+                      <div className="row-actions">
+                        <button
+                          className={`icon ${notes[row.id]?.saved ? 'bookmarked' : ''}`}
+                          title={notes[row.id]?.saved ? 'Remove bookmark' : 'Save to Read later'}
+                          aria-label={`Bookmark ${row.title}`}
+                          aria-pressed={!!notes[row.id]?.saved}
+                          onClick={() => bookmark(row.id)}
+                        >
+                          <Bookmark size={16} />
                         </button>
-                      }
-                      actions={rowActions(row)}
-                    />
-                  </div>
-                </article>
-              </RowMenu>
-            ))}
-          </section>
-          <footer className="workspace-footer">
-            <span>Sample intelligence for evaluation</span>
-            <span>Digests at 8:00 AM, 11:00 AM and 4:00 PM local time</span>
-          </footer>
-        </div>
+                        <Menu
+                          trigger={
+                            <button className="icon" aria-label={`Actions for ${row.title}`}>
+                              <Ellipsis size={17} />
+                            </button>
+                          }
+                          actions={rowActions(row)}
+                        />
+                      </div>
+                    </article>
+                  </RowMenu>
+                ))}
+              </div>
+            </section>
+            <footer className="workspace-footer">
+              <span>
+                {catalog?.mode === 'live' ? 'Intelligence catalog' : 'Sample intelligence for evaluation'}
+              </span>
+              <span>Digests at 8:00 AM, 11:00 AM and 4:00 PM local time</span>
+            </footer>
+          </div>
+        )}
       </main>
-      {detail && !panel && (
-        <Modal
-          title={detail.title}
-          subtitle={`${detail.publisher} / ${detail.company} / Sample record`}
-          close={() => setDetailId(null)}
-        >
-          <SignalDetail
-            key={detail.id}
-            record={detail}
-            note={notes[detail.id]}
-            update={(patch) => changeNote(detail.id, (old) => ({ ...old, ...patch }))}
-            bookmark={() => bookmark(detail.id)}
-            actions={rowActions(detail)}
-          />
-        </Modal>
-      )}
       {panel === 'folder' && (
         <Modal title="New folder" subtitle="Keep related signals together." close={closePanel}>
           <form
@@ -914,6 +1122,18 @@ export function App() {
           </div>
         </Modal>
       )}
+      {panel === 'quick' && catalog && (
+        <QuickOpen
+          catalog={catalog}
+          recent={recent}
+          close={closePanel}
+          open={(item) => {
+            setPanel(null)
+            if (item.kind === 'Record') readRow(item.id)
+            else chooseNav(`${item.kind.toLowerCase()}:${item.id}`)
+          }}
+        />
+      )}
       {panel === 'help' && (
         <Modal
           title="About Signal Desk"
@@ -925,8 +1145,9 @@ export function App() {
             real. Do not cite these records as verified events.
           </p>
           <p className="detail-summary">
-            Right-click a signal to organize it, or use Strategic analysis to select evidence and build a
-            brief. Search titles, summaries, publishers, companies and your tags with Ctrl+K or ⌘K.
+            Right-click a signal and choose Select for analysis, or select signals in the feed and choose
+            Analyze selection. Search titles, summaries, publishers, companies and your tags with Ctrl+K or
+            ⌘K.
           </p>
           {!desktop && (
             <a className="button" href="/?tray=1">
@@ -947,19 +1168,23 @@ export function App() {
         >
           {brief ? (
             <>
-              <pre className="brief-text">{brief.text}</pre>
+              {isAnalysisDocument(brief) ? (
+                <AnalysisPreview document={brief} />
+              ) : (
+                <pre className="brief-text">{brief.text}</pre>
+              )}
               <div className="dialog-actions">
                 <button className="button" onClick={() => share(brief)}>
                   <Share2 size={15} /> Share
                 </button>
-                <Menu
-                  trigger={
-                    <button className="button primary">
-                      <Download size={15} /> Export <ChevronDown size={13} />
-                    </button>
-                  }
-                  actions={exports(brief)}
-                />
+                {isAnalysisDocument(brief) && (
+                  <button className="button" onClick={() => save(brief, 'Markdown')}>
+                    <Download size={15} /> Markdown
+                  </button>
+                )}
+                <button className="button primary" onClick={() => save(brief, 'PDF')}>
+                  <Download size={15} /> Export PDF
+                </button>
               </div>
             </>
           ) : (
@@ -1004,13 +1229,13 @@ export function App() {
               <label className="check-label">
                 <input
                   type="checkbox"
-                  checked={live}
-                  disabled={!desktop}
+                  checked={live && catalog?.mode !== 'live'}
+                  disabled={!desktop || catalog?.mode === 'live'}
                   onChange={(e) => setLive(e.target.checked)}
                 />{' '}
                 Use OpenCode with my configured provider
               </label>
-              {live && (
+              {live && catalog?.mode !== 'live' && (
                 <p className="dialog-description">
                   Selected sample records and your objective will be sent to the configured inference
                   provider. Do not enter sensitive information.
@@ -1022,9 +1247,15 @@ export function App() {
                 </p>
               )}
               <div className="dialog-actions">
-                <button className="button primary" disabled={busy || !objective.trim() || chosen.length < 2}>
+                <button className="button primary" disabled={busy || !objective.trim() || !chosen.length}>
                   <Sparkles size={15} />
-                  {busy ? 'Building brief…' : live ? 'Run with OpenCode' : 'Generate sample brief'}
+                  {busy
+                    ? 'Building brief…'
+                    : catalog?.mode === 'live'
+                      ? 'Generate API analysis'
+                      : live
+                        ? 'Run with OpenCode'
+                        : 'Generate sample brief'}
                 </button>
               </div>
             </form>
@@ -1056,111 +1287,22 @@ export function App() {
         </Modal>
       )}
       {toast && (
-        <div role="status" className="toast">
+        <div className="toast">
           <Activity size={16} />
-          {toast}
+          <span role="status">{toast}</span>
+          {exportNotice && toast.endsWith(' exported') && (
+            <button
+              className="button"
+              onClick={() =>
+                void invoke('reveal_last_export').catch(() => tell('Could not show the exported file.'))
+              }
+            >
+              Show file
+            </button>
+          )}
         </div>
       )}
     </div>
-  )
-}
-function SignalDetail({
-  record,
-  note,
-  update,
-  bookmark,
-  actions,
-}: {
-  record: Signal
-  note?: Notes[string]
-  update: (note: Notes[string]) => void
-  bookmark: () => void
-  actions: Action[]
-}) {
-  const [highlight, setHighlight] = useState(note?.highlight ?? '')
-  const summary = useRef<HTMLParagraphElement>(null)
-  const capture = () => {
-    const selection = window.getSelection()
-    const text =
-      selection &&
-      summary.current?.contains(selection.anchorNode) &&
-      summary.current?.contains(selection.focusNode)
-        ? selection.toString().trim()
-        : record.summary
-    if (text) {
-      setHighlight(text)
-      update({ highlight: text })
-    }
-  }
-  const at = highlight && record.summary.indexOf(highlight)
-  return (
-    <>
-      <p className="detail-summary" ref={summary}>
-        {typeof at === 'number' && at >= 0 ? (
-          <>
-            {record.summary.slice(0, at)}
-            <mark>{highlight}</mark>
-            {record.summary.slice(at + highlight.length)}
-          </>
-        ) : (
-          record.summary
-        )}
-      </p>
-      <div className="detail-meta">
-        <Importance row={record} />
-        <span className="category">{record.category}</span>
-        <button className="text-button" onMouseDown={(event) => event.preventDefault()} onClick={capture}>
-          Highlight excerpt
-        </button>
-      </div>
-      <label>
-        Tags{' '}
-        <input
-          maxLength={300}
-          placeholder="Comma-separated tags"
-          defaultValue={note?.tags?.join(', ')}
-          onChange={(e) =>
-            update({
-              tags: [
-                ...new Set(
-                  e.target.value
-                    .split(',')
-                    .map((t) => t.trim())
-                    .filter(Boolean),
-                ),
-              ],
-            })
-          }
-        />
-      </label>
-      <label>
-        Highlight or note{' '}
-        <textarea
-          rows={3}
-          maxLength={3000}
-          placeholder="Capture a quote or a takeaway…"
-          value={highlight}
-          onChange={(e) => {
-            setHighlight(e.target.value)
-            update({ highlight: e.target.value })
-          }}
-        />
-      </label>
-      <div className="dialog-actions">
-        <button className="button" onClick={bookmark}>
-          <Bookmark size={15} />
-          {note?.saved ? 'Saved' : 'Read later'}
-        </button>
-        <Menu
-          trigger={
-            <button className="button">
-              <Ellipsis size={15} /> More
-            </button>
-          }
-          actions={actions}
-        />
-      </div>
-    </>
   )
 }
 function RadioWave() {

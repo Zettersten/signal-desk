@@ -1,11 +1,12 @@
 import { invoke } from '@tauri-apps/api/core'
 import { desktop, type Brief } from './native'
 import type { Signal } from './data'
-export type Format = 'PDF' | 'Word' | 'PowerPoint'
+import { analysisBrand, documentBlocks, isAnalysisDocument } from './analysis-document'
+export type Format = 'PDF' | 'Word' | 'PowerPoint' | 'Markdown'
 export function signalBrief(records: Signal[]): Brief {
   return {
     title: records.length === 1 ? records[0].title : 'Competitive signals',
-    text: `Sample intelligence — not verified reporting.\n\n${records.map((r) => `${r.company} | ${r.publisher} | ${r.category} | ${r.importance}% importance\n${r.title}\n${r.summary}${r.url ? `\n${r.url}` : ''}`).join('\n\n')}`,
+    text: `${records.some((record) => record.sample) ? 'Includes sample intelligence — not verified reporting.\n\n' : ''}${records.map((r) => `${r.company} | ${r.publisher} | ${r.category} | ${r.importance}% importance\n${r.title}\n${r.summary}${r.url ? `\n${r.url}` : ''}`).join('\n\n')}`,
   }
 }
 async function saveFile(name: string, blob: Blob) {
@@ -30,6 +31,10 @@ export async function buildArtifact(brief: Brief, format: Format) {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
       .slice(0, 80) || 'signal-desk'
+  if (format === 'Markdown') {
+    if (!isAnalysisDocument(brief)) throw new Error('Only analysis documents have a Markdown export.')
+    return { name: `${name}.md`, blob: new Blob([brief.markdown], { type: 'text/markdown;charset=utf-8' }) }
+  }
   if (format === 'PDF') {
     const { jsPDF } = await import('jspdf')
     const pdf = new jsPDF({ unit: 'pt', format: 'letter' })
@@ -52,15 +57,50 @@ export async function buildArtifact(brief: Brief, format: Format) {
         y += size * 1.45
       }
     }
-    line('Signal Desk / HawkEye 360', 10, true)
-    y += 16
-    line(brief.title, 23, true)
-    y += 12
-    for (const paragraph of brief.text.split('\n')) line(paragraph, 11)
+    if (isAnalysisDocument(brief)) {
+      pdf.setProperties({
+        title: brief.title,
+        subject: 'HawkEye 360 strategic analysis',
+        author: analysisBrand.name,
+      })
+      pdf.setFillColor(analysisBrand.orange)
+      pdf.rect(56, 45, 500, 3, 'F')
+      for (const block of documentBlocks(brief.markdown)) {
+        if (block.kind === 'image' && block.src) {
+          const image = await rasterize(block.src)
+          const width = block.text === 'HawkEye 360 mark' ? 34 : 500
+          const height = (width * image.height) / image.width
+          if (y + height > 728) {
+            pdf.addPage()
+            y = 64
+          }
+          pdf.addImage(image.png, 'PNG', 56, y, width, height, undefined, 'FAST')
+          y += height + 12
+        } else {
+          const heading = block.kind === 'heading'
+          pdf.setTextColor(heading ? analysisBrand.navy : '#182A37')
+          for (const paragraph of block.text.split('\n')) {
+            line(
+              `${block.kind === 'item' ? '– ' : ''}${paragraph}`,
+              heading ? (block.depth === 1 ? 23 : 14) : 11,
+              heading,
+            )
+          }
+          y += block.kind === 'item' ? 2 : 7
+        }
+      }
+    } else {
+      line('Signal Desk / HawkEye 360', 10, true)
+      y += 16
+      line(brief.title, 23, true)
+      y += 12
+      for (const paragraph of brief.text.split('\n')) line(paragraph, 11)
+    }
     for (let p = 1; p <= pdf.getNumberOfPages(); p++) {
       pdf.setPage(p)
       pdf.setFontSize(9)
-      pdf.text(`Signal Desk  /  ${p}`, 56, 755)
+      pdf.setTextColor(analysisBrand.navy)
+      pdf.text(`${isAnalysisDocument(brief) ? 'HawkEye 360 / Signal Desk' : 'Signal Desk'}  /  ${p}`, 56, 755)
     }
     return { name: `${name}.pdf`, blob: pdf.output('blob') }
   }
@@ -126,6 +166,21 @@ export async function buildArtifact(brief: Brief, format: Format) {
     })
   }
   return { name: `${name}.pptx`, blob: (await pptx.write({ outputType: 'blob' })) as Blob }
+}
+
+async function rasterize(source: string) {
+  const image = new Image()
+  image.src = source
+  await image.decode()
+  const canvas = document.createElement('canvas')
+  const { naturalWidth: width, naturalHeight: height } = image
+  if (!width || !height || width > 2048 || height > 2048) throw new Error('Invalid analysis image size.')
+  canvas.width = width * 2
+  canvas.height = height * 2
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('Could not render the analysis images.')
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  return { png: canvas.toDataURL('image/png'), width, height }
 }
 export async function exportBrief(brief: Brief, format: Format) {
   const { name, blob } = await buildArtifact(brief, format)

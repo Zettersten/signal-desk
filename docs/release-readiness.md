@@ -31,6 +31,8 @@
 
 ## Acceptance tests before inviting users
 
+Use the [native desktop acceptance checklist](native-acceptance.md) for interaction tests on each supported platform. Successful startup smoke tests are not a substitute for using the installed app with the keyboard, assistive technology, and multiple displays.
+
 - **Install and update:** On clean, non-admin accounts on each supported platform, install the first signed build. Make a newer signed build available in a separate test channel or repository. Confirm a background download with the workspace closed; choose **Later** and verify the app stays running; then explicitly install and confirm it reopens with the new version and retains local data. Also test offline recovery and a modified or wrong-version artifact being rejected.
 - **Native behavior:** Verify tray placement, app switching, OS notification permission and the three digest times, launch at sign-in, and native save dialogs and exports under standard enterprise policy. Test clean launch from the Windows current-user installer, macOS `~/Applications`, and Linux AppImage.
 - **Live competitor feed:** Contract an approved data source and replace the sample client. Preserve primary-source URLs, publication timestamps, provenance and meaningful ranking. Deduplicate alerts across digests and test stale or unavailable sources. Clearly separate sample data from verified reporting.

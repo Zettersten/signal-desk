@@ -4,5 +4,10 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: { port: 5173, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } },
-  build: { target: ['safari18', 'chrome131'] },
+  build: {
+    target: ['safari18', 'chrome131'],
+    rolldownOptions: {
+      output: { codeSplitting: { groups: [{ name: 'markdown', test: /node_modules[/\\]marked[/\\]/ }] } },
+    },
+  },
 })

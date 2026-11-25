@@ -22,11 +22,14 @@
     "docx": "^9",
     "jspdf": "^4",
     "lucide-react": "^0.577",
+    "marked": "^18.3.0",
     "pptxgenjs": "4.0.0",
     "react": "^19",
     "react-dom": "^19"
   },
-  "overrides": { "image-size": "2.1.0" },
+  "overrides": {
+    "image-size": "2.1.0"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/react": "^19",

@@ -2,7 +2,7 @@ name: Desktop evaluation and release
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'qa/**']
     tags: ['v*']
   workflow_dispatch:
 
@@ -135,6 +135,27 @@ jobs:
           images=("$GITHUB_WORKSPACE"/staged/*.AppImage)
           test "${#images[@]}" -eq 1
           dbus-run-session -- xvfb-run -a timeout 60s "${images[0]}" --appimage-extract-and-run --startup-smoke
+      - name: Smoke-test the macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          executable="src-tauri/target/$TARGET/release/bundle/macos/Signal Desk.app/Contents/MacOS/signal-desk"
+          python3 -c 'import subprocess, sys; subprocess.run([sys.argv[1], "--startup-smoke"], timeout=60, check=True)' "$executable"
+      - name: Smoke-test the installed Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem staged -Filter *.exe)
+          if ($installer.Count -ne 1) { throw 'Expected one Windows installer' }
+          $destination = Join-Path $env:LOCALAPPDATA 'SignalDeskSmoke'
+          $install = Start-Process $installer[0].FullName -ArgumentList "/S /D=$destination" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer exited with $($install.ExitCode)" }
+          $exe = Join-Path $destination 'signal-desk.exe'
+          $app = Start-Process $exe -ArgumentList '--startup-smoke' -PassThru
+          if (!$app.WaitForExit(60000)) { $app.Kill(); throw 'Installed Signal Desk did not exit after its startup test' }
+          if ($app.ExitCode -ne 0) { throw "Installed Signal Desk exited with $($app.ExitCode)" }
       - uses: actions/upload-artifact@v7
         with:
           name: signal-desk-${{ matrix.target }}

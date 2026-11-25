@@ -9,7 +9,9 @@
         "minWidth": 640,
         "minHeight": 500,
         "visible": false,
-        "center": true
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       },
       {
         "label": "inbox",
