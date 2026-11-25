@@ -526,17 +526,25 @@ pub fn run() {
     };
     app.run(move |app, event| {
         if startup_smoke && matches!(event, tauri::RunEvent::Ready) {
-            let test = (|| -> Result<(), String> {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+            let test = async {
                 let app_menu = app.menu().ok_or("Native application menu was not installed")?;
                 if app_menu.items().map_err(|e| e.to_string())?.len() < 5 {
                     return Err("Native menu does not have the expected submenu structure".into());
                 }
-                entities::open_entity_window(app, "record".into(), "s1".into(), None, false)?;
-                entities::open_entity_window(app, "highlight".into(), "smoke-test".into(), None, false)?;
+                entities::open_entity_window(&app, "record".into(), "s1".into(), None, false)?;
+                entities::open_entity_window(&app, "highlight".into(), "smoke-test".into(), None, false)?;
                 for (label, route) in [("record-s1", "record=s1"), ("highlight-smoke-test", "highlight=smoke-test")] {
                     let window = app.get_webview_window(label).ok_or("Reader window was not registered")?;
-                    if window.url().map_err(|e| e.to_string())?.query() != Some(route) {
-                        return Err("Reader window did not resolve its entity route".into());
+                    let deadline = Instant::now() + Duration::from_secs(12);
+                    loop {
+                        let observed = window.url();
+                        if observed.as_ref().is_ok_and(|url| url.query() == Some(route)) { break; }
+                        if Instant::now() >= deadline {
+                            return Err(format!("{label} did not navigate to {route}; last URL: {observed:?}"));
+                        }
+                        tokio::time::sleep(Duration::from_millis(75)).await;
                     }
                     desktop_menu::set_reader_title(window.clone(), "Read-only smoke test".into())?;
                     desktop_menu::set_desktop_zoom(window.clone(), 120)?;
@@ -545,12 +553,13 @@ pub fn run() {
                     }
                     window.destroy().map_err(|e| e.to_string())?;
                 }
-                Ok(())
-            })();
+                Ok::<(), String>(())
+            }.await;
             match test {
-                Ok(()) => finish_startup_smoke(app, true, "Signal Desk native menus, reader window lifecycle, titles and zoom initialized successfully."),
-                Err(error) => finish_startup_smoke(app, false, &format!("Native reader smoke test failed: {error}")),
+                Ok(()) => finish_startup_smoke(&app, true, "Signal Desk native menus, reader window lifecycle, titles and zoom initialized successfully."),
+                Err(error) => finish_startup_smoke(&app, false, &format!("Native reader smoke test failed: {error}")),
             }
+            });
         }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen {
